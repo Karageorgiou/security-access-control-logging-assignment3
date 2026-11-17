@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c11 -O2 -fPIC
+CFLAGS = -Wall -Wextra -std=c11 -O2 -fPIC -pthread
 LDLIBS = -lcrypto -ldl
 
 .PHONY: all clean

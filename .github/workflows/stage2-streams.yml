@@ -1,0 +1,35 @@
+name: Stage 2 stream audit
+
+on:
+  push:
+    branches:
+      - feature/a3-stage2-fwrite-fclose
+  pull_request:
+    branches:
+      - feature/a3-stage1-fopen
+
+jobs:
+  stream-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make libssl-dev python3
+      - name: Clean build and exported symbols
+        run: |
+          make clean all
+          test -s audit_logger.so
+          ldd -r audit_logger.so
+          for symbol in fopen fwrite fclose; do
+            nm -D audit_logger.so | grep -Eq " [T] ${symbol}$"
+          done
+      - name: Build real C smoke programs
+        run: |
+          gcc -Wall -Wextra -std=c11 -O2 -o tests/fopen_probe tests/fopen_probe.c
+          gcc -Wall -Wextra -std=c11 -O2 -o tests/stream_probe tests/stream_probe.c
+      - name: Assert Stage 1 regression
+        run: python3 tests/stage1_ci.py
+      - name: Assert Stage 2 functionality
+        run: python3 tests/stage2_ci.py
