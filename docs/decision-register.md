@@ -1,3 +1,7 @@
+> **CURRENT-STATE NOTICE (2026-11-17):** This file preserves the **original proposed-ADR historical register**, including issues that were subsequently resolved. For the jointly concurred **final minimal architecture**, explicit R03 scope reduction, independent `PASS WITH DISCLOSED RISKS`, Stage 1 CI evidence, and the ongoing staged implementation plan, read **[CURRENT_ARCHITECTURE_AND_HANDOFF.md](CURRENT_ARCHITECTURE_AND_HANDOFF.md)** first. The earlier "pending" statuses below describe the state **when the six original evidence reports were archived**; they are not the current gate status. This notice does not publish accepted ADRs or change owning-authority decisions.
+
+---
+
 # Assignment 3 — Architecture decision register
 
 **Status:** factual tracking index only · **Owner of decisions:** Product Architect (P-ADR), System Architect (S-ADR), with explicit concurrence where their respective dimensions intersect · **Implementation:** not authorized by this register.
