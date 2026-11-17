@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <openssl/evp.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,21 @@
 
 static __thread int audit_depth;
 static int diagnostic_reported;
+static int provenance_reported;
+
+typedef struct TrackedStream
+{
+    FILE *stream;
+    char *path;
+    int descriptor;
+    dev_t device;
+    ino_t inode;
+    mode_t type;
+    struct TrackedStream *next;
+} TrackedStream;
+
+static pthread_mutex_t stream_mutex = PTHREAD_MUTEX_INITIALIZER;
+static TrackedStream *stream_list;
 
 typedef enum
 {
@@ -37,6 +53,113 @@ static void ReportAuditFailure(void)
         ssize_t result = write(STDERR_FILENO, message, sizeof(message) - 1);
         (void)result;
     }
+}
+
+static void ReportUnattributedStream(void)
+{
+    static const char message[] =
+        "audit_logger: stream identity unavailable or stale; event not recorded\n";
+
+    if (__atomic_exchange_n(&provenance_reported, 1, __ATOMIC_RELAXED) == 0)
+    {
+        ssize_t result = write(STDERR_FILENO, message, sizeof(message) - 1);
+        (void)result;
+    }
+}
+
+static int MatchesStream(const TrackedStream *entry, FILE *stream)
+{
+    struct stat metadata;
+    int descriptor = fileno(stream);
+
+    return descriptor >= 0 && descriptor == entry->descriptor &&
+           fstat(descriptor, &metadata) == 0 &&
+           metadata.st_dev == entry->device && metadata.st_ino == entry->inode &&
+           (metadata.st_mode & S_IFMT) == entry->type;
+}
+
+static void FreeStream(TrackedStream *entry)
+{
+    free(entry->path);
+    free(entry);
+}
+
+static void RegisterStream(FILE *stream, const char *path)
+{
+    struct stat metadata;
+    TrackedStream *entry;
+    TrackedStream **current;
+    int descriptor;
+
+    if (stream == NULL || path == NULL)
+        return;
+    descriptor = fileno(stream);
+    if (descriptor < 0 || fstat(descriptor, &metadata) != 0)
+        return;
+
+    entry = calloc(1, sizeof(*entry));
+    if (entry == NULL)
+        return;
+    entry->path = strdup(path);
+    if (entry->path == NULL)
+    {
+        free(entry);
+        return;
+    }
+    entry->stream = stream;
+    entry->descriptor = descriptor;
+    entry->device = metadata.st_dev;
+    entry->inode = metadata.st_ino;
+    entry->type = metadata.st_mode & S_IFMT;
+
+    if (pthread_mutex_lock(&stream_mutex) != 0)
+    {
+        FreeStream(entry);
+        return;
+    }
+    // A previously closed or reused FILE* address cannot retain its old association.
+    current = &stream_list;
+    while (*current != NULL)
+    {
+        if ((*current)->stream == stream)
+        {
+            TrackedStream *old = *current;
+            *current = old->next;
+            FreeStream(old);
+            break;
+        }
+        current = &(*current)->next;
+    }
+    entry->next = stream_list;
+    stream_list = entry;
+    pthread_mutex_unlock(&stream_mutex);
+}
+
+static char *GetTrackedPath(FILE *stream, int remove)
+{
+    TrackedStream **current;
+    char *path = NULL;
+
+    if (pthread_mutex_lock(&stream_mutex) != 0)
+        return NULL;
+    current = &stream_list;
+    while (*current != NULL && (*current)->stream != stream)
+        current = &(*current)->next;
+    if (*current != NULL)
+    {
+        TrackedStream *entry = *current;
+        int valid = MatchesStream(entry, stream);
+
+        if (valid)
+            path = strdup(entry->path);
+        if (remove || !valid)
+        {
+            *current = entry->next;
+            FreeStream(entry);
+        }
+    }
+    pthread_mutex_unlock(&stream_mutex);
+    return path;
 }
 
 static char *MakeAbsolutePath(const char *path)
@@ -343,6 +466,93 @@ cleanup:
     free(normalized);
 }
 
+static void RecordStreamEvent(const char *absolute, int operation, const char *outcome,
+                              int original_errno, FILE *stream,
+                              size_t size, size_t requested, size_t completed,
+                              const struct timespec *timestamp)
+{
+    char digest[65] = "N/A";
+    char date[16];
+    char time_text[32];
+    char *encoded_path = NULL;
+    char *normalized = NULL;
+    char *encoded_key = NULL;
+    char *record = NULL;
+    const char *hash_status = "unavailable";
+    struct tm utc;
+    int denied = strcmp(outcome, "failure") == 0 &&
+                 (original_errno == EACCES || original_errno == EPERM);
+    int needed;
+
+    if (gmtime_r(&timestamp->tv_sec, &utc) == NULL ||
+        strftime(date, sizeof(date), "%Y-%m-%d", &utc) == 0 ||
+        strftime(time_text, sizeof(time_text), "%H:%M:%S", &utc) == 0)
+        goto failure;
+
+    normalized = NormalizePath(absolute);
+    encoded_path = EscapeField(absolute);
+    encoded_key = normalized == NULL ? NULL : EscapeField(normalized);
+    if (encoded_path == NULL || encoded_key == NULL)
+        goto failure;
+
+    // Independent file reads never flush or consume the application's FILE*.
+    if (!(operation == 3 && strcmp(outcome, "failure") == 0) &&
+        HashFile(absolute, stream, digest))
+        hash_status = operation == 3 ? "post-close" : "visible";
+
+    if (operation == 2)
+    {
+        needed = snprintf(NULL, 0,
+                          "v1\t%lu\t%ld\t%s\t%s\t%s.%09ldZ\t%d\t%d\t%s\t%s\t-\t-\t0\t%d\t%s\t%zu\t%zu\t%zu\t%s\n",
+                          (unsigned long)getuid(), (long)getpid(), encoded_path,
+                          date, time_text, timestamp->tv_nsec, operation, denied,
+                          digest, outcome, strcmp(outcome, "failure") == 0 ? original_errno : 0,
+                          hash_status, size, requested, completed, encoded_key);
+        if (needed < 0)
+            goto failure;
+        record = malloc((size_t)needed + 1);
+        if (record == NULL)
+            goto failure;
+        snprintf(record, (size_t)needed + 1,
+                 "v1\t%lu\t%ld\t%s\t%s\t%s.%09ldZ\t%d\t%d\t%s\t%s\t-\t-\t0\t%d\t%s\t%zu\t%zu\t%zu\t%s\n",
+                 (unsigned long)getuid(), (long)getpid(), encoded_path,
+                 date, time_text, timestamp->tv_nsec, operation, denied,
+                 digest, outcome, strcmp(outcome, "failure") == 0 ? original_errno : 0,
+                 hash_status, size, requested, completed, encoded_key);
+    }
+    else
+    {
+        needed = snprintf(NULL, 0,
+                          "v1\t%lu\t%ld\t%s\t%s\t%s.%09ldZ\t3\t%d\t%s\t%s\t-\t-\t0\t%d\t%s\t-\t-\t-\t%s\n",
+                          (unsigned long)getuid(), (long)getpid(), encoded_path,
+                          date, time_text, timestamp->tv_nsec, denied, digest,
+                          outcome, strcmp(outcome, "failure") == 0 ? original_errno : 0,
+                          hash_status, encoded_key);
+        if (needed < 0)
+            goto failure;
+        record = malloc((size_t)needed + 1);
+        if (record == NULL)
+            goto failure;
+        snprintf(record, (size_t)needed + 1,
+                 "v1\t%lu\t%ld\t%s\t%s\t%s.%09ldZ\t3\t%d\t%s\t%s\t-\t-\t0\t%d\t%s\t-\t-\t-\t%s\n",
+                 (unsigned long)getuid(), (long)getpid(), encoded_path,
+                 date, time_text, timestamp->tv_nsec, denied, digest,
+                 outcome, strcmp(outcome, "failure") == 0 ? original_errno : 0,
+                 hash_status, encoded_key);
+    }
+    if (AppendRecord(record, (size_t)needed) != 0)
+        goto failure;
+    goto cleanup;
+
+failure:
+    ReportAuditFailure();
+cleanup:
+    free(record);
+    free(encoded_key);
+    free(encoded_path);
+    free(normalized);
+}
+
 FILE *fopen(const char *path, const char *mode)
 {
     FILE *(*original_fopen)(const char *, const char *);
@@ -377,6 +587,8 @@ FILE *fopen(const char *path, const char *mode)
     original_errno = errno;
     if (!nested)
     {
+        if (result != NULL)
+            RegisterStream(result, absolute);
         if (clock_gettime(CLOCK_REALTIME, &timestamp) == 0)
             RecordOpen(absolute, mode, prior, creation_intent, result, original_errno, &timestamp);
         else
@@ -384,6 +596,106 @@ FILE *fopen(const char *path, const char *mode)
     }
 
     free(absolute);
+    audit_depth--;
+    errno = original_errno;
+    return result;
+}
+
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
+{
+    size_t (*original_fwrite)(const void *, size_t, size_t, FILE *);
+    size_t completed;
+    char *path = NULL;
+    char *after = NULL;
+    int incoming_errno = errno;
+    int original_errno;
+    int nested = audit_depth++ > 0;
+    struct timespec timestamp;
+    const char *outcome;
+
+    original_fwrite = dlsym(RTLD_NEXT, "fwrite");
+    if (original_fwrite == NULL)
+    {
+        audit_depth--;
+        errno = ENOSYS;
+        return 0;
+    }
+
+    if (!nested)
+        path = GetTrackedPath(stream, 0);
+    errno = incoming_errno;
+    completed = original_fwrite(ptr, size, nmemb, stream);
+    original_errno = errno;
+
+    if (!nested)
+    {
+        if (path != NULL)
+            after = GetTrackedPath(stream, 0);
+        if (path == NULL || after == NULL || strcmp(path, after) != 0)
+        {
+            ReportUnattributedStream();
+        }
+        else if (clock_gettime(CLOCK_REALTIME, &timestamp) != 0)
+        {
+            ReportAuditFailure();
+        }
+        else
+        {
+            outcome = (size == 0 || nmemb == 0 || completed == nmemb) ? "success" :
+                      completed > 0 ? "partial" : "failure";
+            RecordStreamEvent(path, 2, outcome, original_errno, stream,
+                              size, nmemb, completed, &timestamp);
+        }
+    }
+    free(after);
+    free(path);
+    audit_depth--;
+    errno = original_errno;
+    return completed;
+}
+
+int fclose(FILE *stream)
+{
+    int (*original_fclose)(FILE *);
+    int result;
+    int incoming_errno = errno;
+    int original_errno;
+    int nested = audit_depth++ > 0;
+    char *path = NULL;
+    struct timespec timestamp;
+
+    original_fclose = dlsym(RTLD_NEXT, "fclose");
+    if (original_fclose == NULL)
+    {
+        audit_depth--;
+        errno = ENOSYS;
+        return EOF;
+    }
+
+    // Capture and remove the association before libc can invalidate the FILE*.
+    if (!nested)
+        path = GetTrackedPath(stream, 1);
+    errno = incoming_errno;
+    result = original_fclose(stream);
+    original_errno = errno;
+
+    if (!nested)
+    {
+        if (path == NULL)
+        {
+            ReportUnattributedStream();
+        }
+        else if (clock_gettime(CLOCK_REALTIME, &timestamp) != 0)
+        {
+            ReportAuditFailure();
+        }
+        else
+        {
+            RecordStreamEvent(path, 3, result == 0 ? "success" : "failure",
+                              original_errno, NULL, 0, 0, 0, &timestamp);
+        }
+    }
+    free(path);
     audit_depth--;
     errno = original_errno;
     return result;

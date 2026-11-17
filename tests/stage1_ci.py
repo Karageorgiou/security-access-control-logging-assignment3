@@ -38,19 +38,25 @@ def read_records():
         assert len(fields) == 19, (len(fields), line)
         assert fields[0] == "v1", line
         assert fields[1] == str(os.getuid()), line
-        assert fields[6] in ("0", "1"), line
+        assert fields[6] in ("0", "1", "2", "3"), line
         assert fields[7] in ("0", "1"), line
-        assert fields[9] in ("success", "failure"), line
-        assert fields[11] in ("absent", "present", "unknown"), line
+        assert fields[9] in ("success", "failure", "partial"), line
+        if fields[6] in ("0", "1"):
+            assert fields[11] in ("absent", "present", "unknown"), line
+        else:
+            assert fields[11] == "-", line
         assert fields[12] in ("0", "1"), line
-        assert fields[14] in ("visible", "unavailable"), line
-        assert fields[15:18] == ["-", "-", "-"], line
+        assert fields[14] in ("visible", "post-close", "unavailable"), line
+        if fields[6] == "2":
+            assert all(re.fullmatch(r"\d+", value) for value in fields[15:18]), line
+        else:
+            assert fields[15:18] == ["-", "-", "-"], line
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", fields[4]), line
         assert re.fullmatch(r"\d{2}:\d{2}:\d{2}\.\d{9}Z", fields[5]), line
         moment = datetime.datetime.fromisoformat(fields[4] + "T" + fields[5][:-1] + "+00:00")
         assert abs((datetime.datetime.now(datetime.timezone.utc) - moment).total_seconds()) < 120
         assert re.fullmatch(r"[0-9a-f]{64}|N/A", fields[8]), line
-        assert (fields[14] == "visible") == (fields[8] != "N/A"), line
+        assert (fields[14] in ("visible", "post-close")) == (fields[8] != "N/A"), line
         entries.append(fields)
     return entries
 
@@ -58,7 +64,8 @@ def read_records():
 def require_event(path, probe_result, operation, denied, outcome, prior=None, digest=None):
     result, _ = probe_result
     records = [item for item in read_records()
-               if item[3] == str(path) and int(item[2]) == result[2]]
+               if item[3] == str(path) and int(item[2]) == result[2]
+               and item[6] in ("0", "1")]
     assert len(records) == 1, (path, result, records)
     event = records[0]
     assert int(event[6]) == operation, event
@@ -145,14 +152,15 @@ def main():
                 results = list(pool.map(lambda _: run_probe(opened, "r"), range(24)))
             for result in results:
                 require_event(opened, result, 1, 0, "success", digest=expected_hash)
-            assert len(read_records()) == 33
+            assert len([e for e in read_records() if e[6] in ("0", "1")]) == 33
 
             nested = work / "nested"
             nested.mkdir()
             lexical = str(work) + "/nested/../existing.txt"
             lexical_result = run_probe(lexical, "r")
             lexical_events = [entry for entry in read_records()
-                              if int(entry[2]) == lexical_result[0][2]]
+                              if int(entry[2]) == lexical_result[0][2]
+                              and entry[6] in ("0", "1")]
             assert len(lexical_events) == 1
             assert lexical_events[0][3] == lexical
             assert lexical_events[0][18] == str(opened)
