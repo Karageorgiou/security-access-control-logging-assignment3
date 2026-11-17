@@ -58,6 +58,16 @@ The separate `independent-adversarial-reviewer` reported **PASS WITH DISCLOSED R
 3. **Optional, non-gating improvements:** real partial-positive `fwrite` reproduction; two-UID same-target modification case; stronger post-close file-identity protection; avoid unneeded complexity only with approved changes.
 4. **After any correction**, redo appropriate CI and exact WSL package verification before any authorized ordered merges or final submission.
 
+## 2.2 Professor-first acceptance plan and human-led demonstrator redesign — 2026-11-17
+
+The human approved the **P01–P14 professor-scenario test-coverage plan** and explicitly requested that the `test_audit.c` demonstration be redesigned *collaboratively*, with the human choosing arbitrary filenames, file-operation counts, ordering and other workload quantities. **Test-plan document:** [`docs/PROFESSOR_TEST_PLAN.md`](PROFESSOR_TEST_PLAN.md) (on documentation-only branch `docs/a3-evidence-archive`). This is an agreed test *specification*, not an assertion that new CI code has already been written or run.
+
+**Current delegation:** Product Developer will perform **Phase A only**: ask one meaningful question at a time to establish the human-authored demonstration scenario, explain professor threshold and UID constraints, present an operation-by-operation table and expected analyzer outputs, request human approval, then **STOP without modifying any code, tests, PRs or documentation**. Supervisor maintains the acceptance-plan document in parallel.
+
+**Next authorization gate:** Once the scenario is approved, Supervisor may separately authorize a new stacked implementation work unit from the verified Stage 4 SHA to update `test_audit.c`, adapt affected existing Stage 4 assertions, and implement/reuse P01–P14 CI checks. Then repeat completed GitHub Actions verification, independent delta review, and human WSL checks before packaging/submission. No changes are currently authorized or implied by the review outcome.
+
+**Randomness policy:** No agent-selected arbitrary numeric values, random seeds, workload sizes or iteration counts. Ask the human to supply these; distinguish professor-specified constants from runtime-discovered PIDs, UIDs, UTC timestamps and temporary directory suffixes. Deterministic CI scenarios are preferred.
+
 ## 3. Repository and governance boundaries
 
 - Assignment repository `Karageorgiou/security-access-control-logging-assignment3`. Initial `main` implementation baseline `c31853dc398edc882c2448e2361ba66dce7087f5` (verify live before acting).
