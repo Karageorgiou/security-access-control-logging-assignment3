@@ -33,7 +33,10 @@ static void ReportAuditFailure(void)
     static const char message[] = "audit_logger: could not append to /tmp/access_audit.log\n";
 
     if (__atomic_exchange_n(&diagnostic_reported, 1, __ATOMIC_RELAXED) == 0)
-        (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    {
+        ssize_t result = write(STDERR_FILENO, message, sizeof(message) - 1);
+        (void)result;
+    }
 }
 
 static char *MakeAbsolutePath(const char *path)
