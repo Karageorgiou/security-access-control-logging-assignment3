@@ -1,3 +1,7 @@
+> **Latest handoff (2026-11-17):** The six files indexed below are **unaltered historical sources** and predate the final architecture consensus. Read **[Current Architecture and Project Handoff](../CURRENT_ARCHITECTURE_AND_HANDOFF.md)** for the simplified R03 contract, consolidated R02–R05/R09 decisions, final independent architecture-review verdict, Stage 1 CI links, and staged development/verification plan. Do not treat the historical pending-status paragraphs below as current project status.
+
+---
+
 # Assignment 3 — Original architecture and review evidence index
 
 This directory preserves six source reports **without changing their original bytes**. Only the repository filenames differ from the handoff names. The SHA-256 identities below are calculated from the preserved files; `SHA256SUMS` also lists the tracked professor PDF. This index records provenance and review status only. It does not accept any proposed architecture or approve implementation.
