@@ -1,0 +1,38 @@
+name: Stage 3 audit analyzer
+
+on:
+  push:
+    branches:
+      - feature/a3-stage3-monitor
+  pull_request:
+    branches:
+      - feature/a3-stage2-fwrite-fclose
+
+jobs:
+  analyzer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make libssl-dev python3
+      - name: Clean build and exported hooks
+        run: |
+          make clean all
+          test -s audit_logger.so
+          test -x audit_monitor
+          ldd -r audit_logger.so
+          for symbol in fopen fwrite fclose; do
+            nm -D audit_logger.so | grep -Eq " [T] ${symbol}$"
+          done
+      - name: Build real C probes
+        run: |
+          gcc -Wall -Wextra -std=c11 -O2 -o tests/fopen_probe tests/fopen_probe.c
+          gcc -Wall -Wextra -std=c11 -O2 -o tests/stream_probe tests/stream_probe.c
+      - name: Assert Stage 1 regression
+        run: python3 tests/stage1_ci.py
+      - name: Assert Stage 2 regression
+        run: python3 tests/stage2_ci.py
+      - name: Assert Stage 3 analyzer and end-to-end integration
+        run: python3 tests/stage3_ci.py
