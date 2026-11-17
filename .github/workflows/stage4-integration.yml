@@ -41,7 +41,15 @@ jobs:
       - name: Assert unchanged Stage 3 regression
         run: python3 tests/stage3_ci.py
       - name: Assert approved professor scenario under ordinary UID
-        run: sudo -u nobody python3 tests/professor_scenario_ci.py
+        run: |
+          shared=$(mktemp -d /tmp/a3-professor-workspace.XXXXXX)
+          trap 'rm -rf -- "$shared"' EXIT
+          mkdir -m 755 "$shared/tests"
+          cp audit_logger.so audit_monitor test_audit "$shared/"
+          cp tests/professor_scenario_ci.py "$shared/tests/"
+          chmod 755 "$shared" "$shared/audit_logger.so" "$shared/audit_monitor" "$shared/test_audit"
+          cd "$shared"
+          sudo -u nobody python3 tests/professor_scenario_ci.py
       - name: Assert two-UID integration and six-file candidate ZIP
         run: sudo python3 tests/stage4_ci.py
       - name: Preserve candidate package (not a submission)
