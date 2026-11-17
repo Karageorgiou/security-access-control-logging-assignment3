@@ -1,0 +1,313 @@
+# Assignment 3 — Product Architecture Concurrence Report
+
+**Role:** Product Architect  
+**Date:** November 16, 2026  
+**Status:** Focused concurrence completed — conditional decisions remain  
+**Scope:** Read-only, no implementation or repository modification
+
+## 1. Verification and authority record
+
+**PREFLIGHT: PASS**
+
+The supplied evidence archive passed integrity verification. All five source files match their accompanying SHA-256 manifest, including:
+
+| Source | Verified SHA-256 (abbreviated) |
+|---|---|
+| Professor's original `Assignment03.zip` | `1b0da5cb…bdc26cab` |
+| Original Product Architect investigation | `f76c094a…bcff5d3a` |
+| Independent requirements review | `b49bc2b2…cf8abf88` |
+| Product Architecture follow-up | `87f35344…0bb5753` |
+| System Architecture report | `6137a0ce…e0f098` |
+
+The professor's original five-page PDF was independently inspected. Its Git blob matches the Assignment 3 repository.
+
+Live GitHub verification confirmed:
+
+- **Assignment repository:** `Karageorgiou/security-access-control-logging-assignment3`
+- **Assignment `main`:** `c31853dc398edc882c2448e2361ba66dce7087f5`
+- **GitDrive `main`:** `63175d7c52bd61b3888bbb6e0576102a87157d80`
+- **Operative governance:** v2, activation PR #64
+- **Responsible role:** `product-architect`
+
+Under Governance v2, Product Architecture owns behavioral meaning and contracts. System Architecture owns implementation-independent technical structure and feasibility. Material cross-domain decisions require explicit concurrence from both authorities.
+
+This report grants no implementation, repository-write, or independent-review authority.
+
+## 2. Final proposed modification-counting semantics
+
+**Recommendation: count qualifying successful `fwrite()` invocations, attributed to their UID.**
+
+This is the most directly observable and technically reliable interpretation permitted by the professor's specification, which explicitly allows counting based on `fwrite()` or differing file hashes.
+
+Define a qualifying modification event as an intercepted `fwrite()` call that accepts at least one complete, nonzero-sized element.
+
+For a file \(f\) and UID \(u\):
+
+\[
+M(u,f)=\#\{\text{qualifying fwrite events attributed to }u\text{ on }f\}
+\]
+
+The total modification count is:
+
+\[
+M_{\mathrm{total}}(f)=\sum_u M(u,f)
+\]
+
+Each qualifying invocation counts **once**, not once per byte or written element.
+
+### Boundary behavior
+
+| Scenario | Count |
+|---|---:|
+| Successful `fwrite()` accepting all requested elements | 1 |
+| Partial `fwrite()` accepting some complete elements | 1 |
+| `fwrite()` accepting zero complete elements | 0 |
+| Zero-size or zero-count request | 0 |
+| Successful rewrite of identical content | 1 |
+| Successful write restoring previously observed content | 1 |
+
+A call reporting zero complete elements does not count under this rule, even though an underlying partial-element side effect cannot always be excluded from the return value alone.
+
+For the user's example:
+
+`A → B → A`
+
+The two successful writes count as **two modifications**. Returning to state `A` does not erase or deduplicate the second event.
+
+### Important semantic distinction
+
+This recommendation measures **accepted write operations**, not necessarily actual changes in file contents.
+
+For example, `A → A` counts as one successful write event even though the contents remain identical.
+
+A strict content-changing-transition metric would exclude that event. However, guaranteeing such a metric for every `fwrite()` would require reliable before-and-after content observations. The System Architect established that buffering, inaccessible files, and external writers prevent that guarantee under the proposed minimal architecture.
+
+Therefore, selecting actual content transitions as the mandatory count would introduce a different behavioral and technical requirement. It should not be silently substituted for the operation-based metric.
+
+The recommended interpretation is:
+
+- **Per UID:** Number of qualifying successful write operations.
+- **Total:** Sum of those counts across all UIDs.
+- **Unique modifications:** Distinct qualifying write-event instances, not distinct resulting SHA-256 values.
+
+The professor's terminology remains ambiguous, so this is a proposed product decision rather than a claim of confirmed grading intent.
+
+**Concurrence:** CONCUR WITH CONDITIONS.
+
+The System Architect must confirm that its event records reliably distinguish positive-return, zero-return, and partially successful `fwrite()` operations and retain the originating UID.
+
+## 3. Unavailable SHA-256 hashes
+
+**Product decision selected by the human:** Use genuine SHA-256 digests when contents can be observed; otherwise retain the event and record the literal `N/A`.
+
+### Proposed contract
+
+The hash field has two permitted values under the proposed product design:
+
+1. **Valid digest:** Exactly 64 hexadecimal characters representing a genuine SHA-256 calculation over observed file contents using OpenSSL EVP.
+2. **Unavailable:** Literal `N/A`, used only when a valid digest of the required observable content cannot be obtained.
+
+`N/A` must never be replaced by a fabricated digest, a hash of metadata, a previous digest presented as current, or a digest of guessed contents.
+
+The analyzer must recognize `N/A` as unavailable evidence, not as a SHA-256 value or an additional content state.
+
+### Observation semantics
+
+The System Architect correctly established that a successful `fwrite()` does not guarantee immediate filesystem visibility of buffered bytes.
+
+I therefore support distinguishing:
+
+- A valid hash of **currently observable contents**.
+- A valid final-state observation following a successful close, under appropriate stability assumptions.
+- An unavailable observation that cannot support a genuine hash.
+
+A write-event hash must not be labeled as proof of the write's resulting content unless that relationship is actually established.
+
+No forced flush is required merely to strengthen an audit observation. General content reconstruction remains deferred.
+
+### Explicit specification-compliance risk
+
+**The professor requires a SHA-256 content hash in every audit entry and does not explicitly permit `N/A`.**
+
+Consequently, the proposed behavior is technically honest but **not proven fully compliant** with the original specification.
+
+The human has selected this handling with its documented risk. That supports a bounded product proposal, but does not turn `N/A` into a professor-approved exception.
+
+**Concurrence:** CONCUR WITH CONDITIONS.
+
+System Architect confirmation is required for the observation-point contract, unavailable-hash signaling, and the technical consequences of not forcing buffered writes to become visible.
+
+Full specification compliance remains unverified unless the professor accepts the exception or another compliant approach is established.
+
+## 4. Recommended file-identity rule
+
+**Recommendation: consistent absolute pathname identity without inode-based equivalence.**
+
+The logger should represent a requested filename as an absolute pathname using the calling process's working directory for relative inputs.
+
+For ordinary pathname inputs, a defined lexical normalization should handle redundant separators and `.` / `..` components. It must not depend on successfully reading the target file.
+
+File identity for the initial product contract is equality of the resulting pathname strings, using case-sensitive comparison.
+
+The analyzer applies the same convention to the filename supplied through `-i`, relative to its own current working directory.
+
+### Expected behavior
+
+| Situation | Proposed rule |
+|---|---|
+| Repeated denial of the same normalized pathname | Count as one distinct file for the UID |
+| `file.txt` and `./file.txt` from the same working directory | Same identity |
+| Absolute and relative forms normalizing to the same pathname | Same identity |
+| Inaccessible or nonexistent target | Identity derived from pathname without requiring access |
+| Different symlink pathnames reaching the same target | Potentially distinct identities |
+| Different hard-link pathnames reaching the same inode | Distinct identities |
+| Rename between events | May produce distinct identities |
+
+This is a **pathname-based**, not a physical-file-identity, contract.
+
+Lexical normalization has a known limitation when `..` traverses a symbolic-link component: a lexically simplified path may not identify the same filesystem object as the originally resolved path. This must be documented rather than described as full canonicalization.
+
+### Suspicious-user consequence
+
+A UID is reported by `-s` when it has denied attempts against more than five distinct identities under the accepted rule.
+
+Different aliases of one physical file may increase that count. This is a compliance ambiguity because the professor says *distinct files*, not *distinct absolute pathname strings*.
+
+**Concurrence: CONCUR WITH CONDITIONS** on the simple pathname model.
+
+The System Architect must confirm one exact normalization policy and demonstrate consistent producer/analyzer handling, including inaccessible paths and symlink cases.
+
+No inode registry, `realpath()` dependency, or general alias-resolution system is authorized by this product recommendation.
+
+## 5. Monitoring scope and shared-log semantics
+
+### Monitoring scope
+
+**CONCUR** with the prescribed `LD_PRELOAD` interception of:
+
+- `fopen()`
+- `fwrite()`
+- `fclose()`
+
+The product must not claim kernel-wide or universally system-wide monitoring.
+
+The actual coverage is limited to calls reaching the overridden functions in processes where the library is successfully loaded.
+
+Operations through other interfaces and processes outside that scope may remain unobserved.
+
+This is consistent with the professor's explicitly required mechanism. It does not prove that the broad “across the system” wording is fully satisfied under every interpretation.
+
+### Shared audit log
+
+**CONCUR WITH CONDITIONS** on using one shared absolute log location, such as `/tmp/access_audit.log`.
+
+The required observable behavior is that participating users can generate audit records and the analyzer can subsequently read those records.
+
+Directory accessibility alone does not ensure either operation.
+
+The technical design must account for file ownership, permissions, `umask`, existing files, append behavior, and concurrent writers.
+
+The product requires that successful audit writes preserve existing records and produce parseable entries. It does not require a tamper-proof security logging service.
+
+A shared writable log may be altered by users with sufficient privileges. That limitation must be disclosed rather than hidden.
+
+Concrete permission policies, locking, synchronization, and append mechanisms remain System Architect decisions.
+
+## 6. Technical ADR concurrence assessment
+
+| Technical ADR | Product Architect determination | Conditions |
+|---|---|---|
+| **S-ADR-01 — Interception Lifecycle and Stream State** | **CONCUR WITH CONDITIONS** | Preserve original results and error behavior; distinguish attempted from completed operations; retain reliable UID/path association; do not equate buffered write success with confirmed content change. Combined pre/post observations are supported, but their exact mechanism remains System-owned. |
+| **S-ADR-02 — Shared Record and Append Persistence** | **CONCUR WITH CONDITIONS** | Incorporate the selected pathname identity, explicit `N/A` representation, consistent event meanings, multi-user readability/append capability, and a defined audit-failure policy. |
+| **S-ADR-03 — File-Content Hash Observation Strategy** | **CONCUR WITH CONDITIONS** | Use real EVP hashes for observable contents, retain events with `N/A` when necessary, avoid fabricated evidence and forced flushing, defer general reconstruction, and explicitly document the specification-compliance gap. |
+
+None receives unconditional concurrence.
+
+In particular, S-ADR-03 may be used as a technically bounded proposed strategy, but its inability to guarantee a valid hash in every record prevents an unconditional full-compliance determination.
+
+These are Product Architect concurrence statements only. The System Architect must separately confirm the resulting technical contracts and any changes to its proposals.
+
+## 7. PC-01–PC-07 disposition matrix
+
+| Product contract | Disposition | Final relevant condition |
+|---|---|---|
+| **PC-01 — Events and outcomes** | CONCUR WITH CONDITIONS | Preserve delegated results, distinguish permission denial from unrelated failures, and resolve audit-failure behavior. |
+| **PC-02 — Monitoring coverage** | CONCUR | Use the prescribed wrappers with truthful coverage claims, not kernel-wide auditing. |
+| **PC-03 — File identity** | CONCUR WITH CONDITIONS | Use consistent pathname-string identity after agreed normalization; System concurrence pending. |
+| **PC-04 — Hash evidence** | CONCUR WITH CONDITIONS | Genuine SHA-256 or `N/A`, with explicit observation meaning and compliance risk. |
+| **PC-05 — Modifications** | CONCUR WITH CONDITIONS | Recommend per-UID successful-write event counts and their sum across UIDs; System confirmation of partial-write evidence pending. |
+| **PC-06 — Analyzer users** | CONCUR WITH CONDITIONS | Recommend treating confirmed successful accesses as membership in `-i`; denied-only attempts remain detectable through `-s`, rather than automatically being labeled successful access. |
+| **PC-07 — Shared records** | CONCUR WITH CONDITIONS | Mandatory field meanings remain consistent, including the proposed `N/A` exception; System owns encoding and persistence. |
+
+For PC-06, the proposed successful-access membership rule is a Product Architect interpretation, not a professor-confirmed definition.
+
+## 8. Remaining implementation-blocking questions
+
+The remaining gates are narrow.
+
+**B1 — Exact write-event qualification.**  
+The System Architect must confirm that positive-return `fwrite()` events, including partial success, can be represented accurately and attributed to the correct UID and file.
+
+**B2 — Exact pathname normalization.**  
+The System Architect must confirm a shared, implementable rule for absolute paths, relative paths, inaccessible targets, and symbolic-link components. This is required before accepting file-identity-based analyzer behavior.
+
+**B3 — Hash observation and `N/A` handling.**  
+Both architects must concur on the observation semantics and producer/analyzer representation. The human-selected exception is documented, but full professor compliance remains unresolved.
+
+**B4 — Shared-log usability and failure handling.**  
+The System Architect must establish how ordinary participating users can append and analyze records. The product-level response to audit persistence failure must be explicitly agreed before its behavior is accepted.
+
+These gates do not justify expanding the assignment into a larger monitoring or reconstruction platform.
+
+The implementation may be authorized only against a clearly bounded, accepted architecture. An unconditional claim of professor compliance remains blocked by the unresolved hash requirement and any material file-identity or counting interpretation that the professor may evaluate differently.
+
+## 9. Exact System Architect confirmations requested
+
+The System Architect should explicitly respond to the following concurrence questions:
+
+| ID | Required confirmation |
+|---|---|
+| **SA-C01** | Does S-ADR-01 support one modification count per qualifying positive-return `fwrite()` invocation, including partially successful calls, with zero-return calls excluded and UID attribution preserved? |
+| **SA-C02** | Can S-ADR-02 and S-ADR-03 represent a genuine digest or literal `N/A` consistently, without treating `N/A` as a valid hash or modification state? |
+| **SA-C03** | Does the proposed hash-observation lifecycle accurately distinguish currently visible content from buffered write results and close-time observations? |
+| **SA-C04** | Can pathname normalization and `-i` matching be implemented consistently without requiring successful target access or introducing inode-based equivalence? |
+| **SA-C05** | Can the shared-log architecture demonstrate successful append and analysis by different ordinary users, including when the log already exists under another UID? |
+| **SA-C06** | What observable behavior occurs if an audit record cannot be persisted, and does it preserve the underlying operation's result? |
+| **SA-C07** | Do the three technical ADRs, with these conditions, form a coherent implementation baseline without introducing additional behavior or stronger coverage claims? |
+
+Each answer should identify any limitation that prevents concurrence. A material disagreement must return to the responsible architectural authorities rather than being silently handled during implementation.
+
+## 10. Independent architecture review readiness
+
+**Assessment: READY WITH DECLARED CONDITIONS.**
+
+The proposed product/technical architecture is sufficiently defined for independent adversarial review of its decisions and remaining risks.
+
+The review should particularly challenge:
+
+- Operation-based modification counting versus actual content transitions.
+- Partial-write and zero-return edge cases.
+- Pathname identity and symbolic-link behavior.
+- Hash observation timing and the `N/A` exception.
+- Multi-user audit-log usability.
+- Preservation of original file-operation outcomes.
+
+### Final determination
+
+**Product concurrence:** Three technical ADRs receive **CONCUR WITH CONDITIONS**.
+
+**Modification semantics:** A specific operation-based interpretation is recommended, including per-UID counts and an aggregate total. Restoring old contents does not remove an event from the count.
+
+**Unavailable hashes:** `N/A` is the human-selected exception, with explicit unresolved professor-compliance risk.
+
+**File identity:** A simple, testable pathname-based identity policy is proposed, awaiting System Architect confirmation.
+
+**Monitoring:** The specified `LD_PRELOAD` mechanism is supported without expanding scope.
+
+**Shared log:** Multi-user usability is required, but permission and synchronization mechanisms remain System-owned.
+
+**Outstanding authorization:** Conditional architectural concurrence must be reconciled by the System Architect and subjected to the applicable independent review before being treated as accepted implementation authority.
+
+No binding ADR was published, no source code or repository state was modified, and no implementation was initiated.
+
+**Product Architect work unit complete — REPORT AND STOP.**
