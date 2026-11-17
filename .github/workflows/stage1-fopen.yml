@@ -1,0 +1,33 @@
+name: Stage 1 fopen audit
+
+on:
+  push:
+    branches:
+      - feature/a3-stage1-fopen
+  pull_request:
+    paths:
+      - audit_logger.c
+      - Makefile
+      - tests/**
+      - .github/workflows/stage1-fopen.yml
+
+jobs:
+  fopen-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make libssl-dev python3
+      - name: Clean build
+        run: |
+          make clean all
+          test -s audit_logger.so
+          file audit_logger.so
+          ldd -r audit_logger.so
+          nm -D audit_logger.so | grep -E ' [T] fopen$'
+      - name: Build real fopen smoke caller
+        run: gcc -Wall -Wextra -std=c11 -O2 -o tests/fopen_probe tests/fopen_probe.c
+      - name: Assert Stage 1 behavior
+        run: python3 tests/stage1_ci.py
