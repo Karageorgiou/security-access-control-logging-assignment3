@@ -1,0 +1,55 @@
+name: Stage 4 final implementation and package
+
+on:
+  push:
+    branches:
+      - feature/a3-stage4-integration
+  pull_request:
+    branches:
+      - feature/a3-stage3-monitor
+
+jobs:
+  final-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make libssl-dev python3 zip unzip file binutils
+      - name: Clean six-file-compatible build and verify hooks
+        run: |
+          make clean all
+          test -s audit_logger.so
+          test -x audit_monitor
+          test -x test_audit
+          file audit_logger.so
+          ldd -r audit_logger.so
+          for symbol in fopen fwrite fclose; do
+            nm -D audit_logger.so | grep -Eq " [T] ${symbol}$"
+          done
+      - name: Build existing real C probes
+        run: |
+          gcc -Wall -Wextra -std=c11 -O2 -o tests/fopen_probe tests/fopen_probe.c
+          gcc -Wall -Wextra -std=c11 -O2 -o tests/stream_probe tests/stream_probe.c
+      - name: Assert unchanged Stage 1 regression
+        run: python3 tests/stage1_ci.py
+      - name: Assert unchanged Stage 2 regression
+        run: python3 tests/stage2_ci.py
+      - name: Assert unchanged Stage 3 regression
+        run: python3 tests/stage3_ci.py
+      - name: Create two distinct ordinary test users
+        run: |
+          sudo useradd --create-home --shell /bin/bash a3ciuser1
+          sudo useradd --create-home --shell /bin/bash a3ciuser2
+          test "$(id -u a3ciuser1)" -ne "$(id -u a3ciuser2)"
+          test "$(id -u a3ciuser1)" -ne 0
+          test "$(id -u a3ciuser2)" -ne 0
+      - name: Assert Stage 4 genuine multi-user integration and candidate ZIP
+        run: sudo python3 tests/stage4_ci.py
+      - name: Preserve candidate package (not a submission)
+        uses: actions/upload-artifact@v4
+        with:
+          name: assignment3-stage4-candidate
+          path: artifacts/2015030123_2006030122_assign3.zip
+          if-no-files-found: error
