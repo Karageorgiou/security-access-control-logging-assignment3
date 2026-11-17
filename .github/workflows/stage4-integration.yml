@@ -11,6 +11,17 @@ on:
       - feature/a3-stage3-monitor
 
 jobs:
+  makefile-log-setup:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make libssl-dev python3
+      - name: Assert automatic and independent audit-log initialization
+        run: python3 tests/init_log_ci.py
+
   final-integration:
     runs-on: ubuntu-24.04
     steps:
@@ -21,7 +32,7 @@ jobs:
           sudo apt-get install -y gcc make libssl-dev python3 zip unzip file binutils
       - name: Clean six-file-compatible build and verify hooks
         run: |
-          make clean all
+          make clean audit_logger.so audit_monitor test_audit
           test -s audit_logger.so
           test -x audit_monitor
           test -x test_audit
