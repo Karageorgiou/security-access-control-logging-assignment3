@@ -3,9 +3,11 @@ name: Stage 4 final implementation and package
 on:
   push:
     branches:
+      - feature/a3-professor-demo-redesign
       - feature/a3-stage4-integration
   pull_request:
     branches:
+      - feature/a3-stage4-integration
       - feature/a3-stage3-monitor
 
 jobs:
@@ -38,14 +40,9 @@ jobs:
         run: python3 tests/stage2_ci.py
       - name: Assert unchanged Stage 3 regression
         run: python3 tests/stage3_ci.py
-      - name: Create two distinct ordinary test users
-        run: |
-          sudo useradd --create-home --shell /bin/bash a3ciuser1
-          sudo useradd --create-home --shell /bin/bash a3ciuser2
-          test "$(id -u a3ciuser1)" -ne "$(id -u a3ciuser2)"
-          test "$(id -u a3ciuser1)" -ne 0
-          test "$(id -u a3ciuser2)" -ne 0
-      - name: Assert Stage 4 genuine multi-user integration and candidate ZIP
+      - name: Assert approved professor scenario under ordinary UID
+        run: sudo -u nobody python3 tests/professor_scenario_ci.py
+      - name: Assert two-UID integration and six-file candidate ZIP
         run: sudo python3 tests/stage4_ci.py
       - name: Preserve candidate package (not a submission)
         uses: actions/upload-artifact@v4

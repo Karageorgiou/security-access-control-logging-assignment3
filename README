@@ -42,17 +42,34 @@ participating ordinary user accounts (mode 0666 for this laboratory exercise).
 Check an existing log's type, owner and permissions before deciding to reuse it.
 The logger does not automatically recreate a missing or invalid log.
 
-Demonstration (run as a normal user, never root)
+Demonstration (run as an ordinary user, never root)
 LD_PRELOAD=./audit_logger.so ./test_audit
+LD_PRELOAD=./audit_logger.so ./test_audit --normal
 ./audit_monitor -s
-./audit_monitor -i /tmp/a3-assignment-XXXXXX/example.txt
 
-Replace XXXXXX with the actual unique directory printed as DEMO_DIR. The program
-also prints ANALYZE_FILE, the exact pathname to pass to -i. It creates three
-example files, performs real writes and closes, and tests six distinct denied
-paths. Permission-denial fixtures are restored and removed after each attempt.
-Successful demonstration files remain in the printed temporary directory for
-inspection and can be deleted afterward by their owner.
+Default runs create 15 working files with 93 qualifying writes, and attempt
+opening 10 distinct protected files without permissions. The --normal mode
+uses the same working-file operations and attempts only 4 denied files. The
+suspicious-user threshold is more than 5 distinct denied pathnames per UID.
+Results depend on the accumulated shared log: repeated --normal executions
+may eventually make that UID suspicious.
+
+Each run creates a fresh numbered directory below
+/tmp/security_a3_tests/a3_test_files_<UID>/run_XX/. The shared parent uses
+permissions 1777, and the UID and run directories use 0700. Existing directories
+are validated rather than overwritten. The program prints each working file's
+write count and a ready-to-copy audit_monitor -i command for a3_test_file_09.
+For example, substitute the actual UID and run number printed by the program:
+./audit_monitor -i /tmp/security_a3_tests/a3_test_files_1000/run_01/a3_test_file_09
+
+The 15 working files remain available for inspection. Permission-test files
+contain "This is a protected file", are made unreadable, tested as a normal
+user, then restored and deleted; their audit records stay in the shared log.
+No sudo or second account is required inside test_audit. Multi-UID testing is
+handled by separate development-only CI/WSL scripts, not by this executable.
+The 1777 shared parent supports cooperative users but its owner retains the
+ability to remove other users' entries. It is not a tamper-proof boundary.
+The directory setup does not provision or change /tmp/access_audit.log.
 
 Build cleanup
 make clean
