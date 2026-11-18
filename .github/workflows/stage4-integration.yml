@@ -3,12 +3,25 @@ name: Stage 4 final implementation and package
 on:
   push:
     branches:
+      - feature/a3-professor-demo-redesign
       - feature/a3-stage4-integration
   pull_request:
     branches:
+      - feature/a3-stage4-integration
       - feature/a3-stage3-monitor
 
 jobs:
+  makefile-log-setup:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make libssl-dev python3
+      - name: Assert automatic and independent audit-log initialization
+        run: python3 tests/init_log_ci.py
+
   final-integration:
     runs-on: ubuntu-24.04
     steps:
@@ -19,7 +32,7 @@ jobs:
           sudo apt-get install -y gcc make libssl-dev python3 zip unzip file binutils
       - name: Clean six-file-compatible build and verify hooks
         run: |
-          make clean all
+          make clean audit_logger.so audit_monitor test_audit
           test -s audit_logger.so
           test -x audit_monitor
           test -x test_audit
@@ -38,14 +51,17 @@ jobs:
         run: python3 tests/stage2_ci.py
       - name: Assert unchanged Stage 3 regression
         run: python3 tests/stage3_ci.py
-      - name: Create two distinct ordinary test users
+      - name: Assert approved professor scenario under ordinary UID
         run: |
-          sudo useradd --create-home --shell /bin/bash a3ciuser1
-          sudo useradd --create-home --shell /bin/bash a3ciuser2
-          test "$(id -u a3ciuser1)" -ne "$(id -u a3ciuser2)"
-          test "$(id -u a3ciuser1)" -ne 0
-          test "$(id -u a3ciuser2)" -ne 0
-      - name: Assert Stage 4 genuine multi-user integration and candidate ZIP
+          shared=$(mktemp -d /tmp/a3-professor-workspace.XXXXXX)
+          trap 'rm -rf -- "$shared"' EXIT
+          mkdir -m 755 "$shared/tests"
+          cp audit_logger.so audit_monitor test_audit "$shared/"
+          cp tests/professor_scenario_ci.py "$shared/tests/"
+          chmod 755 "$shared" "$shared/audit_logger.so" "$shared/audit_monitor" "$shared/test_audit"
+          cd "$shared"
+          sudo -u nobody python3 tests/professor_scenario_ci.py
+      - name: Assert two-UID integration and six-file candidate ZIP
         run: sudo python3 tests/stage4_ci.py
       - name: Preserve candidate package (not a submission)
         uses: actions/upload-artifact@v4
