@@ -187,7 +187,10 @@ def Candidate():
             archive.extractall(temporary)
             extracted = Path(temporary) / PACKAGE
             assert {p.name for p in extracted.iterdir()} == set(REQUIRED)
-            Run(['make', 'clean', 'all'], directory=extracted)
+            # The missing-log regression above must remain isolated: compile
+            # the extracted package without invoking the setup-only init-log target.
+            Run(['make', 'clean', 'audit_logger.so', 'audit_monitor', 'test_audit'],
+                directory=extracted)
             assert (extracted / 'audit_logger.so').read_bytes().startswith(b'\x7fELF')
             assert os.access(extracted / 'audit_monitor', os.X_OK)
             assert os.access(extracted / 'test_audit', os.X_OK)

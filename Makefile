@@ -1,48 +1,41 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -O2
 
-# Keep the audit log setup in this Makefile so the submitted ZIP has six files.
-define INIT_LOG_PY
-import os
-import stat
-import sys
-
-path = "/tmp/access_audit.log"
-mode = 0o666
-flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-
-try:
-    try:
-        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, mode)
-        created = True
-    except FileExistsError:
-        fd = os.open(path, flags)
-        created = False
-
-    try:
-        if created:
-            os.fchmod(fd, mode)
-        details = os.fstat(fd)
-        if not stat.S_ISREG(details.st_mode):
-            raise ValueError("audit log must be a regular file")
-        if stat.S_IMODE(details.st_mode) != mode:
-            raise ValueError("audit log permissions must be 0666 (found %04o)" % stat.S_IMODE(details.st_mode))
-    finally:
-        os.close(fd)
-except (OSError, ValueError) as error:
-    print("Audit log setup failed for %s: %s" % (path, error), file=sys.stderr)
-    sys.exit(1)
-
-print("Audit log %s: %s" % ("created" if created else "validated", path))
-endef
-export INIT_LOG_PY
-
 .PHONY: all init-log clean
 all: audit_logger.so audit_monitor test_audit
 	@$(MAKE) --no-print-directory init-log
 
+# Provision the shared log only during explicit build/setup, never in the logger.
 init-log:
-	@python3 -c "$$INIT_LOG_PY"
+	@set -eu; \
+	log=/tmp/access_audit.log; \
+	tmp=; status=validated; \
+	trap 'if [ -n "$$tmp" ]; then rm -f -- "$$tmp" || { echo "Audit log setup failed: cannot remove temporary file $$tmp" >&2; exit 1; }; fi' 0; \
+	trap 'exit 1' 1 2 3 15; \
+	if [ ! -e "$$log" ] && [ ! -L "$$log" ]; then \
+		tmp=$$(mktemp /tmp/.access_audit.log.XXXXXXXXXX) || { echo "Audit log setup failed: mktemp" >&2; exit 1; }; \
+		chmod 0666 "$$tmp" || { echo "Audit log setup failed: chmod $$tmp" >&2; exit 1; }; \
+		if ln -T -- "$$tmp" "$$log" 2>/dev/null; then \
+			status=created; \
+		elif [ ! -e "$$log" ] && [ ! -L "$$log" ]; then \
+			echo "Audit log setup failed: cannot create $$log with a hard link" >&2; exit 1; \
+		fi; \
+	fi; \
+	if [ -L "$$log" ]; then \
+		echo "Audit log setup failed: $$log is a symlink" >&2; exit 1; \
+	fi; \
+	if [ ! -f "$$log" ]; then \
+		echo "Audit log setup failed: $$log is not a regular file" >&2; exit 1; \
+	fi; \
+	mode=$$(stat -c '%a' -- "$$log") || { echo "Audit log setup failed: cannot inspect $$log" >&2; exit 1; }; \
+	if [ "$$mode" != 666 ]; then \
+		echo "Audit log setup failed: $$log permissions must be 0666 (found $$mode)" >&2; exit 1; \
+	fi; \
+	if [ -n "$$tmp" ]; then \
+		rm -f -- "$$tmp" || { echo "Audit log setup failed: cannot remove temporary file $$tmp" >&2; exit 1; }; \
+		tmp=; \
+	fi; \
+	printf 'Audit log %s: %s\n' "$$status" "$$log"
 
 audit_logger.so: audit_logger.c
 	$(CC) $(CFLAGS) -fPIC -pthread -shared -o $@ $< -lcrypto -ldl

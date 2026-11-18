@@ -2,6 +2,8 @@
 """Verify Makefile log provisioning using only a CI-created audit-log fixture."""
 
 import os
+import concurrent.futures
+import glob
 from pathlib import Path
 import stat
 import subprocess
@@ -11,12 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 LOG = Path('/tmp/access_audit.log')
 DEMO_DIRECTORY = Path('/tmp/security_a3_tests')
 BINARIES = ('audit_logger.so', 'audit_monitor', 'test_audit')
+TEMP_PATTERN = '/tmp/.access_audit.log.*'
 owned = {}
 
 
-def Run(*args, success=True):
+def Run(*args, success=True, env=None):
     result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True,
-                            timeout=45)
+                            timeout=45, env=env)
     if success:
         assert result.returncode == 0, (args, result.stdout, result.stderr)
     else:
@@ -54,6 +57,14 @@ def Snapshot():
             details.st_mtime_ns, details.st_ctime_ns, LOG.read_bytes())
 
 
+def TempNames():
+    return set(glob.glob(TEMP_PATTERN))
+
+
+def AssertNoTemporaryFiles(before):
+    assert TempNames() == before, 'Temporary log files leaked from init-log'
+
+
 def TestInitialization():
     assert not os.path.lexists(LOG), 'Refusing to touch a pre-existing audit log'
     demo_before = (tuple(sorted(os.listdir(DEMO_DIRECTORY)))
@@ -61,7 +72,9 @@ def TestInitialization():
     dry_run = Run('make', '-n', 'all').stdout
     assert '\n./test_audit' not in dry_run and '\n./audit_monitor' not in dry_run
 
+    temporary_before = TempNames()
     result = Run('make', 'clean', 'all')
+    AssertNoTemporaryFiles(temporary_before)
     assert 'Audit log created:' in result.stdout, result.stdout
     for filename in BINARIES:
         assert (ROOT / filename).is_file(), filename
@@ -83,10 +96,12 @@ def TestInitialization():
     before = Snapshot()
 
     result = Run('make', 'init-log')
+    AssertNoTemporaryFiles(temporary_before)
     assert 'Audit log validated:' in result.stdout
     assert Snapshot() == before, 'init-log modified an existing valid audit log'
 
     result = Run('make', 'all')
+    AssertNoTemporaryFiles(temporary_before)
     assert 'Audit log validated:' in result.stdout
     assert Snapshot() == before, 'make all modified an existing valid audit log'
     demo_after = (tuple(sorted(os.listdir(DEMO_DIRECTORY)))
@@ -147,12 +162,53 @@ def TestUnsafeTargets():
     RemoveOwned()
 
 
+def TestConcurrentInitialization():
+    assert not os.path.lexists(LOG), 'Refusing to replace an existing audit log'
+    before = TempNames()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(lambda _: Run('make', 'init-log'), range(24)))
+    assert sum('Audit log created:' in result.stdout for result in results) == 1, results
+    assert sum('Audit log validated:' in result.stdout for result in results) == 23, results
+    AssertNoTemporaryFiles(before)
+    state = Remember()
+    assert stat.S_ISREG(state.st_mode)
+    assert stat.S_IMODE(state.st_mode) == 0o666 and state.st_size == 0
+    marker = b'original records remain untouched\n'
+    LOG.write_bytes(marker)
+    snapshot = Snapshot()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(lambda _: Run('make', 'init-log'), range(24)))
+    assert all('Audit log validated:' in result.stdout for result in results)
+    assert Snapshot() == snapshot
+    AssertNoTemporaryFiles(before)
+    RemoveOwned()
+
+
+def TestTemporaryCleanupOnFailure():
+    assert not os.path.lexists(LOG), 'Refusing an existing audit log'
+    before = TempNames()
+    with tempfile.TemporaryDirectory(prefix='a3-make-command-failure-') as workspace:
+        for command in ('ln', 'chmod'):
+            stub = Path(workspace) / command
+            stub.write_text('#!/bin/sh\nexit 1\n', encoding='utf-8')
+            stub.chmod(0o755)
+            env = os.environ.copy()
+            env['PATH'] = workspace + os.pathsep + os.environ['PATH']
+            result = Run('make', 'init-log', success=False, env=env)
+            assert 'Audit log setup failed' in result.stderr
+            assert not os.path.lexists(LOG), 'Failed creation unexpectedly installed a log'
+            AssertNoTemporaryFiles(before)
+            stub.unlink()
+
+
 def main():
     assert os.geteuid() != 0, 'Provisioning must also work as an ordinary user'
     assert not os.path.lexists(LOG), 'Refusing an existing audit log'
     try:
         TestInitialization()
         TestUnsafeTargets()
+        TestConcurrentInitialization()
+        TestTemporaryCleanupOnFailure()
         assert not os.path.lexists(LOG)
     finally:
         if os.path.lexists(LOG):
@@ -160,6 +216,8 @@ def main():
     print('PASS: make all builds three binaries and safely creates 0666 log')
     print('PASS: independent init-log and repeated setup preserve records and metadata')
     print('PASS: symlink, FIFO, directory and unsuitable modes rejected without changes')
+    print('PASS: concurrent setup preserves one log identity and leaves no temporary files')
+    print('PASS: failed ln/chmod cleanup removes temporary files')
     print('PASS: make clean leaves log unchanged; no demo or analyzer execution')
 
 
